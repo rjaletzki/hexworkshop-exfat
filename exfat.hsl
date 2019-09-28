@@ -1,0 +1,204 @@
+#include "standard-types.hsl"
+
+typedef struct exFAT_BOOTSECTOR
+{
+    BYTE   JumpBoot[3] ;
+    CHAR   FileSystemName[8] ;
+    BYTE   MustBeZero[53] ;
+    UQUAD  PartitionOffset ;
+    UQUAD  VolumeLength ;
+    DWORD  FatOffset ;
+    DWORD  FatLength ;
+    DWORD  ClusterHeapOffset ;
+    DWORD  ClusterCount ;
+    DWORD  FirstClusterOfRootDirectory ;
+    DWORD  VolumeSerialNumber ;
+    WORD   FileSystemRevision;
+    WORD   VolumeFlags;
+    BYTE   BytesPerSectorShift ;
+    BYTE   SectorsPerClusterShift ;
+    BYTE   NumberOfFats ;
+    BYTE   DriveSelect ;
+    BYTE   PercentInUse ;
+    BYTE   Reserved[7] ;
+    blob   BootCode[390] ;
+    WORD   BootSignature ;
+    blob   ExcessSpace[(1<<BytesPerSectorShift)-512] ;
+} exFAT_BOOTSECTOR ;
+
+typedef struct exFAT_OEMPARAMETER
+{
+    blob   parameter[48] ;
+} exFAT_OEMPARAMETER ;
+
+typedef struct exFAT_BOOTREGION
+{
+    exFAT_BOOTSECTOR bootsector ;
+    struct exFAT_EXTENDED_BOOTSECTOR
+    {
+        blob   BootCode[(1<<bootsector.BytesPerSectorShift)-2] ;
+        WORD   BootSignature ;
+    }[8] ;
+    struct exFAT_OEMREGION
+    {
+        exFAT_OEMPARAMETER oemParameter[10] ;
+        blob Reserved[(1<<bootsector.BytesPerSectorShift)-480];
+    } ;
+    blob ReservedSector[1<<bootsector.BytesPerSectorShift] ;
+    DWORD  checksum[(1<<bootsector.BytesPerSectorShift)/4] ;
+} exFAT_BOOTREGION ;
+
+struct exFAT_FILESYSTEM
+{
+    // BootRegion
+    exFAT_BOOTREGION mainBootRegion ;
+    exFAT_BOOTREGION backupBootRegion ;
+
+    // FatRegion
+    blob   FatAlignment[(mainBootRegion.bootsector.FatOffset-24)*(1<<mainBootRegion.bootsector.BytesPerSectorShift)] ;
+    blob   FirstFat[mainBootRegion.bootsector.FatLength*(1<<mainBootRegion.bootsector.BytesPerSectorShift)] ;
+    blob   SecondFat[mainBootRegion.bootsector.FatLength*(mainBootRegion.bootsector.NumberOfFats-1)*(1<<mainBootRegion.bootsector.BytesPerSectorShift)] ;
+
+    // DataRegion
+    blob   ClusterHeapAlignment[(mainBootRegion.bootsector.ClusterHeapOffset-(mainBootRegion.bootsector.FatOffset+mainBootRegion.bootsector.FatLength*mainBootRegion.bootsector.NumberOfFats))*(1<<mainBootRegion.bootsector.BytesPerSectorShift)] ;
+    struct ClusterHeap_First100Clusters
+    {
+        blob sector[1<<mainBootRegion.bootsector.BytesPerSectorShift] ;
+    }[100][1<<mainBootRegion.bootsector.SectorsPerClusterShift] ;
+    //exFAT_SECTOR ExcessSpace[262144-(512+(32704*8))] ; //VolumeLength – (ClusterHeapOffset + ClusterCount * 2SectorsPerClusterShift)
+} ;
+
+///////////////////
+
+struct exFAT_DirectoryEntrySet_First100Entries
+{
+    struct exFAT_DirectoryEntry
+    {
+        //UBYTE EntryType;
+        struct EntryType
+        {
+            UBYTE TypeCode : 5;
+            UBYTE TypeImportance : 1; // critical (0), benign (1)
+            UBYTE TypeCategory : 1; // primary (0), secondary (1)
+            UBYTE InUse : 1;
+        };
+        if (EntryType.TypeCode + EntryType.TypeImportance + EntryType.TypeCategory + EntryType.InUse == 0)
+        {
+            blob EndOfDirectoryEntry[31];
+        }
+        else if (EntryType.InUse == 0)
+        {
+            blob undefined[31];
+        }
+        else if (EntryType.TypeCode + EntryType.TypeImportance + EntryType.TypeCategory == 0)
+        {
+            blob InvalidEntry[31];
+        }
+        else
+        {
+            if (EntryType.TypeImportance + EntryType.TypeCategory == 0) // critical, primary
+            {
+                switch (EntryType.TypeCode)
+                {
+                case 1:
+                    struct AllocationBitmapEntry
+                    {
+                        struct BitmapFlags
+                        {
+                            UBYTE BitmapIdentifier : 1;
+                            UBYTE Reserved : 7;
+                        };
+                        BYTE Reserved[18];
+                        DWORD FirstCluster;
+                        UQUAD DataLength;
+                    };
+                    break;
+                case 2:
+                    struct UpCaseTableEntry
+                    {
+                        BYTE Reserved1[3];
+                        DWORD TableChecksum;
+                        BYTE Reserved2[12];
+                        DWORD FirstCluster;
+                        UQUAD DataLength;
+                    };
+                    break;
+                case 3:
+                    struct VolumeLabelEntry
+                    {
+                        BYTE CharCount;
+                        char VolumeLabel[22];
+                        blob reserved[8];
+                    };
+                    break;
+                case 5:
+                    struct FileEntry
+                    {
+                        BYTE SecondaryCount;
+                        WORD SetChecksum;
+                        WORD FileAttributes;
+                        BYTE Reserved1[2];
+                        DWORD CreateTimestamp;
+                        DWORD LastModifiedTimestamp;
+                        DWORD LastAccessedTimestamp;
+                        BYTE Create10msIncrement;
+                        BYTE LastModified10msIncrement;
+                        BYTE CreateUtcOffset;
+                        BYTE LastModifiedUtcOffset;
+                        BYTE LastAccessedUtcOffset;
+                        BYTE Reserved2[7];
+                    };
+                    break;
+                default:
+                    blob UnknownEntry[31];
+                    break;
+                };
+            }
+            else if (EntryType.TypeImportance + EntryType.TypeCategory == 2) // benign, secondary
+            {
+                switch (EntryType.TypeCode)
+                {
+                case 0:
+                    blob VendorExtensionEntry[31];
+                    break;
+                case 1:
+                    blob VendorAllocationEntry[31];
+                    break;
+                default:
+                    blob UnknownEntry[31];
+                    break;
+                };
+            }
+            else if (EntryType.TypeImportance == 1) // benign, primary
+            {
+                switch (EntryType.TypeCode)
+                {
+                case 0:
+                    blob VolumeGUIDEntry[31];
+                    break;
+                case 2:
+                    blob TexFATPaddingEntry[31];
+                    break;
+                default:
+                    blob UnknownEntry[31];
+                    break;
+                };
+            }
+            else // critical, secondary; EntryType.TypeCategory == 1
+            {
+                switch (EntryType.TypeCode)
+                {
+                case 0:
+                    blob StreamExtensionEntry[31];
+                    break;
+                case 1:
+                    blob FileNameEntry[31];
+                    break;
+                default:
+                    blob UnknownEntry[31];
+                    break;
+                };
+            }
+        }
+    }[100];
+};

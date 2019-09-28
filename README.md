@@ -1,0 +1,2 @@
+# exFAT Structure Definition for Hex Workshop
+This repository contains an exFAT file system Structure Definition for [Hex Workshop](http://hexworkshop.com/). The implementation is currently very basic (read: incomplete) but tries to follow the [official exFAT specification](https://docs.microsoft.com/en-us/windows/win32/fileio/exfat-specification).
